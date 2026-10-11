@@ -29,6 +29,8 @@ func proxyRouter() http.Handler {
 		r.Use(parseProxyName, findProxyByName)
 		r.Get("/", getProxy)
 		r.Get("/delay", getProxyDelay)
+		r.Get("/quality", getAdaptiveQuality)
+		r.Post("/feedback", postAdaptiveFeedback)
 		r.Put("/", updateProxy)
 		r.Delete("/", unfixedProxy)
 	})
@@ -157,4 +159,41 @@ func unfixedProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	render.Status(r, http.StatusBadRequest)
 	render.JSON(w, r, ErrBadRequest)
+}
+
+func getAdaptiveQuality(w http.ResponseWriter, r *http.Request) {
+	proxy := r.Context().Value(CtxKeyProxy).(C.Proxy)
+	group, ok := proxy.Adapter().(*outboundgroup.Adaptive)
+	if !ok {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrBadRequest)
+		return
+	}
+	render.JSON(w, r, group.Snapshot())
+}
+
+func postAdaptiveFeedback(w http.ResponseWriter, r *http.Request) {
+	proxy := r.Context().Value(CtxKeyProxy).(C.Proxy)
+	group, ok := proxy.Adapter().(*outboundgroup.Adaptive)
+	if !ok {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrBadRequest)
+		return
+	}
+	req := struct {
+		Target string `json:"target"`
+		Reason string `json:"reason"`
+	}{}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	if err := render.DecodeJSON(r.Body, &req); err != nil {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrBadRequest)
+		return
+	}
+	if err := group.Feedback(req.Target, req.Reason); err != nil {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, newError(err.Error()))
+		return
+	}
+	render.NoContent(w, r)
 }

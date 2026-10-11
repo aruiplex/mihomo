@@ -573,6 +573,7 @@ func handleTCPConn(connCtx C.ConnContext) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), C.DefaultTCPTimeout)
 	defer cancel()
+	ctx = context.WithValue(ctx, C.RoutingTargetKey{}, strings.ToLower(metadata.RemoteAddress()))
 	remoteConn, err := retry(ctx, func(ctx context.Context) (remoteConn C.Conn, err error) {
 		remoteConn, err = proxy.DialContext(ctx, dialMetadata)
 		if err != nil {
@@ -721,6 +722,10 @@ func getRules(metadata *C.Metadata) []C.Rule {
 }
 
 func shouldStopRetry(err error) bool {
+	var policy interface{ Retryable() bool }
+	if errors.As(err, &policy) && !policy.Retryable() {
+		return true
+	}
 	if errors.Is(err, resolver.ErrIPNotFound) {
 		return true
 	}
