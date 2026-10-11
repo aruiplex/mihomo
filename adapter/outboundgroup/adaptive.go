@@ -25,15 +25,21 @@ import (
 // UDP and handshakes that cannot finish without payload remain unsupported.
 type Adaptive struct {
 	*GroupBase
-	opt      AdaptiveOption
-	mu       sync.Mutex
-	records  map[string]*adaptiveRecord
-	events   []adaptiveEvent
-	now      func() time.Time
-	sequence uint64
+	opt            AdaptiveOption
+	mu             sync.Mutex
+	records        map[string]*adaptiveRecord
+	events         []adaptiveEvent
+	now            func() time.Time
+	sequence       uint64
+	qualityPath    string
+	qualityTimer   *time.Timer
+	nodeIdentities map[string]string
+	qualityError   string
 }
 
 type AdaptiveOption struct {
+	PersistQuality  bool              `group:"quality-persistence,omitempty"`
+	QualityTTL      int               `group:"quality-ttl,omitempty"` // seconds
 	MaxAttempts     int               `group:"max-attempts,omitempty"`
 	DialBudget      int               `group:"dial-budget,omitempty"` // milliseconds, whole establishment
 	AttemptTimeout  int               `group:"attempt-timeout,omitempty"`
@@ -94,16 +100,24 @@ func NewAdaptive(common GroupCommonOption, opt AdaptiveOption, empty C.Proxy, pr
 	if opt.MaxAttempts < 1 || opt.MaxAttempts > 16 || opt.DialBudget < 1 || opt.DialBudget > 30000 || opt.AttemptTimeout < 1 || opt.AttemptTimeout > opt.DialBudget || opt.Cooldown < 1 || opt.Cooldown > 3600000 || opt.MaxRecords < 1 || opt.MaxRecords > 65536 {
 		return nil, errors.New("adaptive: invalid attempt, timeout, cooldown or record limit")
 	}
+	if opt.QualityTTL == 0 {
+		opt.QualityTTL = 86400
+	}
+	if opt.QualityTTL < 60 || opt.QualityTTL > 604800 {
+		return nil, errors.New("adaptive: invalid quality TTL")
+	}
 	regions := make(map[string]string, len(opt.Regions))
 	for node, region := range opt.Regions {
 		regions[node] = region
 	}
 	opt.Regions = regions
-	return &Adaptive{GroupBase: NewGroupBase(GroupBaseOption{
+	a := &Adaptive{GroupBase: NewGroupBase(GroupBaseOption{
 		Name: common.Name, Type: C.Adaptive, Hidden: common.Hidden, Icon: common.Icon,
 		Filter: common.Filter, ExcludeFilter: common.ExcludeFilter, ExcludeType: common.ExcludeType,
 		EmptyFallback: empty, Providers: providers,
-	}), opt: opt, records: make(map[string]*adaptiveRecord), now: time.Now}, nil
+	}), opt: opt, records: make(map[string]*adaptiveRecord), now: time.Now}
+	a.initQuality()
+	return a, nil
 }
 
 func adaptiveTarget(ctx context.Context, m *C.Metadata) string {
@@ -115,10 +129,11 @@ func adaptiveTarget(ctx context.Context, m *C.Metadata) string {
 
 func (a *Adaptive) record(target, node string) *adaptiveRecord {
 	key := target + "\x00" + node
-	if r := a.records[key]; r != nil {
+	if r := a.records[key]; r != nil && a.now().Sub(r.Touched) <= time.Duration(a.opt.QualityTTL)*time.Second {
 		r.Touched = a.now()
 		return r
 	}
+	delete(a.records, key) // expired instance of this key must not evict another live record
 	if len(a.records) >= a.opt.MaxRecords {
 		var oldestKey string
 		var oldest time.Time
@@ -141,12 +156,14 @@ func (a *Adaptive) event(e adaptiveEvent) {
 		a.events = a.events[:255]
 	}
 	a.events = append(a.events, e)
+	a.scheduleQuality()
 }
 
 // Global failure evidence below is deduplicated by host, not port.
 func (a *Adaptive) candidates(target string, proxies []C.Proxy) []C.Proxy {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.syncQualityNodes(proxies)
 	now := a.now()
 	preferred := a.opt.PreferredRegion
 	// Preserve the previous successful region; failures/feedback change future
@@ -352,6 +369,7 @@ func primeAdaptiveHandshake(ctx context.Context, conn C.Conn) (err error) {
 // Feedback is scoped to the actual last established node for this target.
 // A later successful close cannot erase newer user feedback.
 func (a *Adaptive) Feedback(target, reason string) error {
+	proxies := a.GetProxies(false)
 	switch reason {
 	case "unknown", "timeout", "disconnect", "unusable":
 	default:
@@ -359,6 +377,7 @@ func (a *Adaptive) Feedback(target, reason string) error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.syncQualityNodes(proxies)
 	var node string
 	var latest uint64
 	for _, r := range a.records {
@@ -378,8 +397,13 @@ func (a *Adaptive) Feedback(target, reason string) error {
 }
 
 func (a *Adaptive) Snapshot() any {
+	proxies := a.GetProxies(false)
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.syncQualityNodes(proxies)
+	if a.opt.PersistQuality {
+		a.saveQuality()
+	}
 	records := make([]adaptiveRecord, 0, len(a.records))
 	for _, r := range a.records {
 		records = append(records, *r)
@@ -390,7 +414,7 @@ func (a *Adaptive) Snapshot() any {
 		}
 		return records[i].Target < records[j].Target
 	})
-	return map[string]any{"records": records, "events": append([]adaptiveEvent(nil), a.events...), "scope": "TCP transport only; application outcome unknown; process-local history"}
+	return map[string]any{"records": records, "events": append([]adaptiveEvent(nil), a.events...), "scope": "TCP transport only; application outcome unknown; local expiring history", "persistence": a.opt.PersistQuality, "persistenceError": a.qualityError, "ttlSeconds": a.opt.QualityTTL}
 }
 
 func (a *Adaptive) Now() string                      { return "target-dependent" }

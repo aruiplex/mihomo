@@ -1,0 +1,10 @@
+{
+  "repository": "aruiplex/proxy",
+  "commit": "341c5b3ddcd61bf27d23cc0561844cab202e0aa7",
+  "files": {
+    "tests/integration/routing_probe.py": "d2d068ff3598b6825344c71612002c97c25ebd46b61334d7c48d19c394c8c0a0",
+    "tests/integration/protocol_probe.py": "6c90bb3b3786e5283eedbc92e6acafc444d203aad76c0a40434f37f6e869df10",
+    "tests/integration/managed_routing_probe.py": "a9d38eddc5007879da11099674df887625daa7b81b594535865a2c810fab9c43",
+    "tests/integration/stability_probe.py": "c17d57c4ba511904e97cfa9a552cf56357e2352bde73e92ef1c8fc63b455267e"
+  }
+}

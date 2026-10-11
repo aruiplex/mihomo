@@ -19,10 +19,13 @@ import (
 
 type adaptiveTestProxy struct {
 	C.Proxy
-	name string
-	kind C.AdapterType
-	dial func(context.Context, *C.Metadata) (C.Conn, error)
+	name     string
+	identity string
+	kind     C.AdapterType
+	dial     func(context.Context, *C.Metadata) (C.Conn, error)
 }
+
+func (p *adaptiveTestProxy) RoutingIdentity() string { return p.identity }
 
 func (p *adaptiveTestProxy) Name() string                { return p.name }
 func (p *adaptiveTestProxy) Type() C.AdapterType         { return p.kind }
