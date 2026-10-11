@@ -26,3 +26,9 @@ test/config/cache*
 /output
 .vscode/
 .fleet/
+# Adaptive tooling runtime output
+__pycache__/
+candidate/
+upgrade-failure.json
+upgrade-pr.md
+failure-body.md
