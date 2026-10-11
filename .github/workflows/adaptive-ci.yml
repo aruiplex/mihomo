@@ -1,0 +1,77 @@
+name: Adaptive acceptance and candidate
+on:
+  push:
+    branches: [adaptive/stable, 'adaptive/upgrade-*']
+  pull_request:
+    branches: [adaptive/stable, adaptive/base]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a prerelease candidate after all checks pass
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: adaptive-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: pins
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          print('fixtures='+json.load(open('adaptive/fixtures.json'))['commit'])
+          print('go='+json.load(open('adaptive/baseline.json'))['go_toolchain'].removeprefix('go'))
+          PY
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.pins.outputs.go }}
+      - uses: actions/checkout@v4
+        with:
+          repository: aruiplex/proxy
+          ref: ${{ steps.pins.outputs.fixtures }}
+          path: proxy-fixtures
+          persist-credentials: false
+      - run: python3 adaptive/validate.py --proxy proxy-fixtures --output candidate
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: adaptive-linux-amd64-${{ github.sha }}
+          path: candidate/
+          if-no-files-found: ignore
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.repository == 'aruiplex/mihomo'
+    needs: validate
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: adaptive-linux-amd64-${{ github.sha }}
+          path: candidate
+      - name: Publish immutable tested candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          cd candidate
+          sha256sum --check SHA256SUMS
+          version=$(python3 -c 'import json;print(json.load(open("manifest.json"))["version"])')
+          python3 - <<'PY'
+          import json,os
+          v=json.load(open('validation.json'))
+          assert v['passed'] is True and v['source_commit']==os.environ['SOURCE_COMMIT']
+          PY
+          gh release create "$version" --repo aruiplex/mihomo --target "$SOURCE_COMMIT" \
+            --prerelease --title "$version (isolated acceptance)" \
+            --notes 'Linux/amd64 only. Passed isolated race/TCP/TLS/protocol tests. Local AI acceptance and activation remain separate.' \
+            mihomo-linux-amd64-* manifest.json validation.json adaptive.patch SHA256SUMS
