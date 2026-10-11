@@ -1,6 +1,6 @@
 {
   "repository": "aruiplex/proxy",
-  "commit": "341c5b3ddcd61bf27d23cc0561844cab202e0aa7",
+  "commit": "9be18db0cbf3ee074b3b24e6036cee8d69bf489b",
   "files": {
     "tests/integration/routing_probe.py": "d2d068ff3598b6825344c71612002c97c25ebd46b61334d7c48d19c394c8c0a0",
     "tests/integration/protocol_probe.py": "6c90bb3b3786e5283eedbc92e6acafc444d203aad76c0a40434f37f6e869df10",

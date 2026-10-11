@@ -17,8 +17,9 @@ import (
 // healthy connection later closes. Timers have bounded lifetimes (500 ms).
 var qualityOwners = struct {
 	sync.Mutex
-	owners map[string]*Adaptive
-}{owners: make(map[string]*Adaptive)}
+	owners map[string]uint64
+	next   uint64
+}{owners: make(map[string]uint64)}
 
 type adaptiveQualityFile struct {
 	Schema  int               `json:"schema"`
@@ -34,9 +35,6 @@ func (a *Adaptive) qualityPolicy() string {
 
 func (a *Adaptive) initQuality() {
 	a.nodeIdentities = make(map[string]string)
-	if !a.opt.PersistQuality {
-		return
-	}
 	group := fmt.Sprintf("%x", sha256.Sum256([]byte(a.Name())))
 	a.qualityPath = filepath.Join(C.Path.HomeDir(), "adaptive-quality", group+".json")
 	qualityOwners.Lock()
@@ -49,7 +47,12 @@ func (a *Adaptive) initQuality() {
 			}
 		}
 	}
-	qualityOwners.owners[a.qualityPath] = a
+	qualityOwners.next++
+	a.qualityOwner = qualityOwners.next
+	qualityOwners.owners[a.qualityPath] = a.qualityOwner
+	if !a.opt.PersistQuality {
+		return
+	}
 	file, err := os.Open(a.qualityPath)
 	if os.IsNotExist(err) {
 		return
@@ -145,7 +148,7 @@ func (a *Adaptive) scheduleQuality() {
 func (a *Adaptive) saveQuality() {
 	qualityOwners.Lock()
 	defer qualityOwners.Unlock()
-	if qualityOwners.owners[a.qualityPath] != a {
+	if qualityOwners.owners[a.qualityPath] != a.qualityOwner {
 		return
 	}
 	a.expireQuality()

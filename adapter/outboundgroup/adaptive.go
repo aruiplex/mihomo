@@ -32,6 +32,7 @@ type Adaptive struct {
 	now            func() time.Time
 	sequence       uint64
 	qualityPath    string
+	qualityOwner   uint64
 	qualityTimer   *time.Timer
 	nodeIdentities map[string]string
 	qualityError   string
