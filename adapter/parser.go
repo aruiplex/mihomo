@@ -1,6 +1,8 @@
 package adapter
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 
 	"github.com/metacubex/mihomo/adapter/outbound"
@@ -246,7 +248,15 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
 	}
 
 	proxy = outbound.NewAutoCloseProxyAdapter(proxy)
-	return NewProxy(proxy), nil
+	wrapped := NewProxy(proxy)
+	identity, err := json.Marshal(struct {
+		Mapping  map[string]any
+		Provider string
+	}{mapping, opt.ProviderName})
+	if err == nil {
+		wrapped.routingIdentity = fmt.Sprintf("%x", sha256.Sum256(identity))
+	}
+	return wrapped, nil
 }
 
 type proxyOption struct {

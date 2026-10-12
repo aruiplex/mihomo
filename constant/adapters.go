@@ -55,6 +55,7 @@ const (
 	ZeroTier
 	EasyTier
 	GostRelay
+	Adaptive
 )
 
 const (
@@ -250,6 +251,8 @@ func (at AdapterType) String() string {
 		return "Fallback"
 	case URLTest:
 		return "URLTest"
+	case Adaptive:
+		return "Adaptive"
 	case LoadBalance:
 		return "LoadBalance"
 	default:

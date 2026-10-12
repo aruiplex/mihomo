@@ -32,11 +32,16 @@ type internalProxyState struct {
 }
 
 type Proxy struct {
+	routingIdentity string
 	C.ProxyAdapter
 	alive   atomic.Bool
 	history *queue.Queue[C.DelayHistory]
 	extra   xsync.Map[string, *internalProxyState]
 }
+
+// RoutingIdentity fingerprints the parsed node configuration, including credentials,
+// without exposing the configuration. Unknown adapters fail closed for persistence.
+func (p *Proxy) RoutingIdentity() string { return p.routingIdentity }
 
 // Adapter implements C.Proxy
 func (p *Proxy) Adapter() C.ProxyAdapter {

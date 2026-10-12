@@ -1,0 +1,10 @@
+{
+  "upstream": "MetaCubeX/mihomo",
+  "upstream_tag": "v1.19.32",
+  "upstream_commit": "88dcbf7f1614a67c3b36b848ee3592dfa92ada36",
+  "patch_import_commit": "51241a52",
+  "version": "v1.19.32-adaptive.3",
+  "go_toolchain": "go1.27.2",
+  "platform_validated": "linux/amd64",
+  "source_id": "aruiplex/proxy-adaptive"
+}

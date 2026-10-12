@@ -199,6 +199,12 @@ func ParseProxyGroup(config map[string]any, proxyMap map[string]C.Proxy, provide
 			return nil, err
 		}
 		return NewSelector(groupOption, opt, emptyFallback, providers)
+	case "adaptive":
+		opt := AdaptiveOption{}
+		if err := decoder.Decode(config, &opt); err != nil {
+			return nil, err
+		}
+		return NewAdaptive(groupOption, opt, emptyFallback, providers)
 	case "fallback":
 		opt := FallbackOption{}
 		err = decoder.Decode(config, &opt)
