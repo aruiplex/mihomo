@@ -1,6 +1,6 @@
 # Adaptive TCP routing fork
 
-This branch is the authoritative source for adaptive routing. The original prototype.2 patch in aruiplex/proxy is frozen evidence, not a second implementation. The first commit after v1.19.32 imports that patch unchanged. Later commits add local quality lifecycle and candidate automation. The local production proxy remains prototype.2 until a separate prepare/activate/TLS/business acceptance step.
+This branch is the authoritative source for adaptive routing. The original prototype.2 patch in aruiplex/proxy is frozen evidence, not a second implementation. The first commit after v1.19.32 imports that patch unchanged. Later commits add local quality lifecycle and candidate automation. Query the local managed kernel status for the deployed version; building a candidate does not activate it.
 
 Only Linux/amd64 is currently built and accepted. Candidate and official fixture binaries use CGO_ENABLED=0 and GOAMD64=v1 for portable pure-Go Linux builds; race tests use the runner C toolchain. The pinned Go toolchain, upstream commit and version live in baseline.json; the independently pinned proxy fixture checkout and file digests live in fixtures.json. Offline artifacts include a relative-path manifest.local.json usable after downloading all sibling files. New upstream versions generate new binaries, validation reports, patch digest, source commit and SHA256SUMS. Old prototype digests are never reused.
 
@@ -11,6 +11,16 @@ The default CI builds artifacts. Publishing is an explicit workflow_dispatch wit
 The weekly tracker accepts formal stable semver releases only. It merges into adaptive/upgrade-vX.Y.Z, retains patches, creates a reviewable PR and explicitly dispatches acceptance (GITHUB_TOKEN-created PRs do not otherwise trigger PR CI). Existing open upgrade PRs are reused. Conflicts preserve merge status/diff and source files as an artifact and create one actionable blocked issue, never publish or overwrite the patch. Resolve the issue and review before merging an upgrade. Inherited upstream build/test workflows are disabled in the fork to avoid their release or container publication paths.
 
 ## Local quality history
+
+Adaptive.4 associates live outcomes with the original target/node record and a
+submission epoch. A reset on an earlier stream remains visible as a transport
+failure but cannot cool a route after newer evidence has replaced it. The same
+rule covers out-of-order dial failures and successes, explicit application
+feedback, and replaced or evicted quality records. Current failures still cool
+their route; unrelated targets do not supersede them. Established connections
+and caller outcomes are preserved, and application requests are never replayed.
+Epochs and record ownership are process-local; persisted quality schema remains
+version 1 because no live connection survives process restart.
 
 The new version supports `quality-persistence: true` and `quality-ttl: 86400` on an adaptive group. Persistence is opt-in; the deployed prototype.2 does not support it. Records expire even when persistence is disabled. Capacity defaults to 4096 records; TTL accepts 60 seconds through 7 days. A single target's failure stays isolated; only the existing independent-host evidence threshold influences other targets.
 

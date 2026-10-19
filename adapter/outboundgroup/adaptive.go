@@ -25,17 +25,18 @@ import (
 // UDP and handshakes that cannot finish without payload remain unsupported.
 type Adaptive struct {
 	*GroupBase
-	opt            AdaptiveOption
-	mu             sync.Mutex
-	records        map[string]*adaptiveRecord
-	events         []adaptiveEvent
-	now            func() time.Time
-	sequence       uint64
-	qualityPath    string
-	qualityOwner   uint64
-	qualityTimer   *time.Timer
-	nodeIdentities map[string]string
-	qualityError   string
+	opt              AdaptiveOption
+	mu               sync.Mutex
+	records          map[string]*adaptiveRecord
+	events           []adaptiveEvent
+	now              func() time.Time
+	sequence         uint64
+	evidenceSequence uint64
+	qualityPath      string
+	qualityOwner     uint64
+	qualityTimer     *time.Timer
+	nodeIdentities   map[string]string
+	qualityError     string
 }
 
 type AdaptiveOption struct {
@@ -51,6 +52,9 @@ type AdaptiveOption struct {
 }
 
 type adaptiveRecord struct {
+	// Live decisions have an owner ordered at submission, independent of the
+	// cumulative counters and completion order. No old streams survive restart.
+	evidenceEpoch   uint64
 	Target          string    `json:"target"`
 	Node            string    `json:"node"`
 	Until           time.Time `json:"cooldownUntil"`
@@ -62,6 +66,21 @@ type adaptiveRecord struct {
 	LastEstablished time.Time `json:"lastEstablished"`
 	Closed          uint64    `json:"closed"`
 	Reason          string    `json:"reason"`
+}
+
+// Called under a.mu. Earlier operations retain their own outcome but cannot
+// replace a newer route decision, including explicit application feedback.
+func (a *Adaptive) applyEvidence(r *adaptiveRecord, epoch uint64, reason string) bool {
+	if a.records[r.Target+"\x00"+r.Node] != r || epoch < r.evidenceEpoch {
+		return false
+	}
+	r.evidenceEpoch = epoch
+	r.Reason = reason
+	r.Until = time.Time{}
+	if reason != "" {
+		r.Until = a.now().Add(time.Duration(a.opt.Cooldown) * time.Millisecond)
+	}
+	return true
 }
 
 type adaptiveEvent struct {
@@ -269,7 +288,10 @@ func (a *Adaptive) DialContext(ctx context.Context, m *C.Metadata) (C.Conn, erro
 		}
 		attempt, stop := context.WithTimeout(ctx, time.Duration(a.opt.AttemptTimeout)*time.Millisecond)
 		a.mu.Lock()
-		a.record(target, p.Name()).Dials++
+		r := a.record(target, p.Name())
+		r.Dials++
+		a.evidenceSequence++
+		epoch := a.evidenceSequence
 		a.mu.Unlock()
 		conn, err := p.DialContext(attempt, m)
 		phase := "dial-error"
@@ -307,26 +329,25 @@ func (a *Adaptive) DialContext(ctx context.Context, m *C.Metadata) (C.Conn, erro
 				break
 			}
 			a.mu.Lock()
-			r := a.record(target, p.Name())
 			r.Failures++
-			r.Reason = phase
-			r.Until = a.now().Add(time.Duration(a.opt.Cooldown) * time.Millisecond)
-			a.event(adaptiveEvent{Target: target, Node: p.Name(), Kind: "dial-failed", Reason: r.Reason})
+			reason := phase
+			if !a.applyEvidence(r, epoch, phase) {
+				reason = "superseded:" + phase
+			}
+			a.event(adaptiveEvent{Target: target, Node: p.Name(), Kind: "dial-failed", Reason: reason})
 			a.mu.Unlock()
 			continue
 		}
 		conn.AppendToChains(a)
 		a.mu.Lock()
-		r := a.record(target, p.Name())
 		r.Established++
 		r.LastEstablished = a.now()
 		a.sequence++
 		r.Selection = a.sequence
-		r.Until = time.Time{}
-		r.Reason = ""
+		a.applyEvidence(r, epoch, "")
 		a.event(adaptiveEvent{Target: target, Node: p.Name(), Kind: "established"})
 		a.mu.Unlock()
-		return &adaptiveConn{Conn: conn, group: a, target: target, node: p.Name(), started: a.now()}, nil
+		return &adaptiveConn{Conn: conn, group: a, record: r, target: target, node: p.Name(), started: a.now(), evidenceEpoch: epoch}, nil
 	}
 	if ctx.Err() != nil {
 		last = ctx.Err()
@@ -391,8 +412,8 @@ func (a *Adaptive) Feedback(target, reason string) error {
 	}
 	r := a.record(target, node)
 	r.Failures++
-	r.Reason = "feedback:" + reason
-	r.Until = a.now().Add(time.Duration(a.opt.Cooldown) * time.Millisecond)
+	a.evidenceSequence++
+	a.applyEvidence(r, a.evidenceSequence, "feedback:"+reason)
 	a.event(adaptiveEvent{Target: target, Node: node, Kind: "feedback", Reason: reason})
 	return nil
 }
@@ -437,8 +458,10 @@ func (a *Adaptive) MarshalJSON() ([]byte, error) {
 type adaptiveConn struct {
 	C.Conn
 	group         *Adaptive
+	record        *adaptiveRecord
 	target, node  string
 	started       time.Time
+	evidenceEpoch uint64
 	mu            sync.Mutex
 	closed        bool
 	read, written uint64
@@ -482,11 +505,15 @@ func (c *adaptiveConn) observe(n int, err error, read bool) {
 	}
 	c.outcome = "transport-error"
 	c.group.mu.Lock()
-	r := c.group.record(c.target, c.node)
+	r := c.record
 	r.Failures++
-	r.Reason = "transport-error"
-	r.Until = c.group.now().Add(time.Duration(c.group.opt.Cooldown) * time.Millisecond)
-	c.group.event(adaptiveEvent{Target: c.target, Node: c.node, Kind: "transport-error", Reason: "unknown-root-cause"})
+	reason := "superseded"
+	if c.evidenceEpoch == r.evidenceEpoch {
+		if c.group.applyEvidence(r, c.evidenceEpoch, "transport-error") {
+			reason = "unknown-root-cause"
+		}
+	}
+	c.group.event(adaptiveEvent{Target: c.target, Node: c.node, Kind: "transport-error", Reason: reason})
 	c.group.mu.Unlock()
 }
 func (c *adaptiveConn) Read(p []byte) (int, error) {
@@ -523,7 +550,7 @@ func (c *adaptiveConn) Close() error {
 	c.mu.Unlock()
 	err := c.Conn.Close()
 	c.group.mu.Lock()
-	c.group.record(c.target, c.node).Closed++
+	c.record.Closed++
 	c.group.event(e)
 	c.group.mu.Unlock()
 	return err
