@@ -25,18 +25,17 @@ import (
 // UDP and handshakes that cannot finish without payload remain unsupported.
 type Adaptive struct {
 	*GroupBase
-	opt              AdaptiveOption
-	mu               sync.Mutex
-	records          map[string]*adaptiveRecord
-	events           []adaptiveEvent
-	now              func() time.Time
-	sequence         uint64
-	evidenceSequence uint64
-	qualityPath      string
-	qualityOwner     uint64
-	qualityTimer     *time.Timer
-	nodeIdentities   map[string]string
-	qualityError     string
+	opt            AdaptiveOption
+	mu             sync.Mutex
+	records        map[string]*adaptiveRecord
+	events         []adaptiveEvent
+	now            func() time.Time
+	sequence       uint64
+	qualityPath    string
+	qualityOwner   uint64
+	qualityTimer   *time.Timer
+	nodeIdentities map[string]string
+	qualityError   string
 }
 
 type AdaptiveOption struct {
@@ -75,6 +74,7 @@ func (a *Adaptive) applyEvidence(r *adaptiveRecord, epoch uint64, reason string)
 		return false
 	}
 	r.evidenceEpoch = epoch
+	r.Touched = a.now()
 	r.Reason = reason
 	r.Until = time.Time{}
 	if reason != "" {
@@ -290,8 +290,8 @@ func (a *Adaptive) DialContext(ctx context.Context, m *C.Metadata) (C.Conn, erro
 		a.mu.Lock()
 		r := a.record(target, p.Name())
 		r.Dials++
-		a.evidenceSequence++
-		epoch := a.evidenceSequence
+		a.sequence++
+		epoch := a.sequence
 		a.mu.Unlock()
 		conn, err := p.DialContext(attempt, m)
 		phase := "dial-error"
@@ -342,9 +342,11 @@ func (a *Adaptive) DialContext(ctx context.Context, m *C.Metadata) (C.Conn, erro
 		a.mu.Lock()
 		r.Established++
 		r.LastEstablished = a.now()
-		a.sequence++
-		r.Selection = a.sequence
-		a.applyEvidence(r, epoch, "")
+		if a.applyEvidence(r, epoch, "") {
+			// Across nodes, later submitted successful establishments own the
+			// target choice even if an earlier dial completes after them.
+			r.Selection = epoch
+		}
 		a.event(adaptiveEvent{Target: target, Node: p.Name(), Kind: "established"})
 		a.mu.Unlock()
 		return &adaptiveConn{Conn: conn, group: a, record: r, target: target, node: p.Name(), started: a.now(), evidenceEpoch: epoch}, nil
@@ -388,7 +390,7 @@ func primeAdaptiveHandshake(ctx context.Context, conn C.Conn) (err error) {
 	return conn.SetDeadline(time.Time{})
 }
 
-// Feedback is scoped to the actual last established node for this target.
+// Feedback is scoped to the latest submitted successful route for this target.
 // A later successful close cannot erase newer user feedback.
 func (a *Adaptive) Feedback(target, reason string) error {
 	proxies := a.GetProxies(false)
@@ -412,8 +414,8 @@ func (a *Adaptive) Feedback(target, reason string) error {
 	}
 	r := a.record(target, node)
 	r.Failures++
-	a.evidenceSequence++
-	a.applyEvidence(r, a.evidenceSequence, "feedback:"+reason)
+	a.sequence++
+	a.applyEvidence(r, a.sequence, "feedback:"+reason)
 	a.event(adaptiveEvent{Target: target, Node: node, Kind: "feedback", Reason: reason})
 	return nil
 }

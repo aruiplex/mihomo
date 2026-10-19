@@ -260,3 +260,91 @@ func TestAdaptiveEarlierSuccessCannotEraseNewerTransportFailure(t *testing.T) {
 		t.Fatal("earlier success erased current transport failure")
 	}
 }
+
+func TestAdaptiveCurrentFailureRefreshesEvidenceTTL(t *testing.T) {
+	raw := &adaptiveTestConn{readError: syscall.ECONNRESET}
+	g := adaptiveTestGroup(t, AdaptiveOption{QualityTTL: 60}, adaptiveTestNode("only", func(context.Context, *C.Metadata) (C.Conn, error) { return raw, nil }))
+	now := time.Now()
+	g.now = func() time.Time { return now }
+	c, err := g.DialContext(context.Background(), adaptiveTestMetadata("long.test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	now = now.Add(61 * time.Second)
+	c.Read(make([]byte, 1))
+	if _, err := g.DialContext(context.Background(), adaptiveTestMetadata("long.test")); err == nil {
+		t.Fatal("fresh current transport failure discarded as expired history")
+	}
+}
+
+func TestAdaptiveSupersededFailureDoesNotRefreshEvidenceTTL(t *testing.T) {
+	raw := &adaptiveTestConn{readError: syscall.ECONNRESET}
+	calls := 0
+	g := adaptiveTestGroup(t, AdaptiveOption{QualityTTL: 60}, adaptiveTestNode("only", func(context.Context, *C.Metadata) (C.Conn, error) {
+		calls++
+		if calls == 1 {
+			return raw, nil
+		}
+		return &adaptiveTestConn{}, nil
+	}))
+	now := time.Now()
+	g.now = func() time.Time { return now }
+	metadata := adaptiveTestMetadata("long.test")
+	old, err := g.DialContext(context.Background(), metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	now = now.Add(time.Second)
+	current, err := g.DialContext(context.Background(), metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer current.Close()
+	record := g.records["long.test:443\x00only"]
+	touched := record.Touched
+	now = now.Add(30 * time.Second)
+	old.Read(make([]byte, 1))
+	if !record.Touched.Equal(touched) {
+		t.Fatal("superseded failure extended newer evidence TTL")
+	}
+}
+
+func TestAdaptiveEarlierSuccessCannotRetargetFeedback(t *testing.T) {
+	started, finish := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	a := adaptiveTestNode("A", func(context.Context, *C.Metadata) (C.Conn, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-finish
+			return &adaptiveTestConn{}, nil
+		}
+		return nil, syscall.ECONNRESET
+	})
+	g := adaptiveTestGroup(t, AdaptiveOption{}, a, adaptiveTestNode("B", adaptiveTestOK))
+	metadata := adaptiveTestMetadata("two.test")
+	done := make(chan C.Conn, 1)
+	go func() { c, _ := g.DialContext(context.Background(), metadata); done <- c }()
+	<-started
+	current, err := g.DialContext(context.Background(), metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer current.Close()
+	if err := g.Feedback("two.test:443", "unusable"); err != nil {
+		t.Fatal(err)
+	}
+	close(finish)
+	earlier := <-done
+	if earlier == nil {
+		t.Fatal("earlier caller lost connection")
+	}
+	defer earlier.Close()
+	if err := g.Feedback("two.test:443", "disconnect"); err != nil {
+		t.Fatal(err)
+	}
+	if g.records["two.test:443\x00B"].Reason != "feedback:disconnect" {
+		t.Fatal("earlier dial success retargeted feedback away from newer request's B route")
+	}
+}

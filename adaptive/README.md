@@ -16,7 +16,10 @@ Adaptive.4 associates live outcomes with the original target/node record and a
 submission epoch. A reset on an earlier stream remains visible as a transport
 failure but cannot cool a route after newer evidence has replaced it. The same
 rule covers out-of-order dial failures and successes, explicit application
-feedback, and replaced or evicted quality records. Current failures still cool
+feedback, and replaced or evicted quality records. Route selection across nodes
+uses the submission order of successful establishments, so late completion of an
+earlier dial cannot retarget feedback. Only accepted current evidence refreshes
+the policy's TTL. Current failures still cool
 their route; unrelated targets do not supersede them. Established connections
 and caller outcomes are preserved, and application requests are never replayed.
 Epochs and record ownership are process-local; persisted quality schema remains
