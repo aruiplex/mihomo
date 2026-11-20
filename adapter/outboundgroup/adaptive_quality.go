@@ -83,7 +83,8 @@ func (a *Adaptive) initQuality() {
 		a.nodeIdentities = make(map[string]string)
 	}
 	for _, record := range stored.Records {
-		if record.Target == "" || len(record.Target) > 512 || record.Node == "" || len(record.Node) > 256 || record.Touched.After(a.now().Add(time.Minute)) || a.now().Sub(record.Touched) > time.Duration(a.opt.QualityTTL)*time.Second {
+		now := a.now()
+		if record.Target == "" || len(record.Target) > 512 || record.Node == "" || len(record.Node) > 256 || record.Touched.After(now.Add(time.Minute)) || a.qualityExpired(&record, now) {
 			continue
 		}
 		copy := record
@@ -95,11 +96,16 @@ func (a *Adaptive) initQuality() {
 }
 
 func (a *Adaptive) expireQuality() {
+	now := a.now()
 	for key, record := range a.records {
-		if a.now().Sub(record.Touched) > time.Duration(a.opt.QualityTTL)*time.Second {
+		if a.qualityExpired(record, now) {
 			delete(a.records, key)
 		}
 	}
+}
+
+func (a *Adaptive) qualityExpired(record *adaptiveRecord, now time.Time) bool {
+	return !record.unusableAt(now) && now.Sub(record.Touched) > time.Duration(a.opt.QualityTTL)*time.Second
 }
 
 // Called with a.mu held and the current provider snapshot. Identity covers

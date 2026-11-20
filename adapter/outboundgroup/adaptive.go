@@ -67,6 +67,13 @@ type adaptiveRecord struct {
 	Reason          string    `json:"reason"`
 }
 
+const unusableFeedback = "feedback:unusable"
+const unusableCooldown = 30 * time.Minute
+
+func (r *adaptiveRecord) unusableAt(now time.Time) bool {
+	return r.Reason == unusableFeedback && r.Until.After(now)
+}
+
 // Called under a.mu. Earlier operations retain their own outcome but cannot
 // replace a newer route decision, including explicit application feedback.
 func (a *Adaptive) applyEvidence(r *adaptiveRecord, epoch uint64, reason string) bool {
@@ -74,11 +81,19 @@ func (a *Adaptive) applyEvidence(r *adaptiveRecord, epoch uint64, reason string)
 		return false
 	}
 	r.evidenceEpoch = epoch
-	r.Touched = a.now()
+	now := a.now()
+	r.Touched = now
+	if r.unusableAt(now) && reason != unusableFeedback {
+		return true
+	}
 	r.Reason = reason
 	r.Until = time.Time{}
 	if reason != "" {
-		r.Until = a.now().Add(time.Duration(a.opt.Cooldown) * time.Millisecond)
+		cooldown := time.Duration(a.opt.Cooldown) * time.Millisecond
+		if reason == unusableFeedback && cooldown < unusableCooldown {
+			cooldown = unusableCooldown
+		}
+		r.Until = now.Add(cooldown)
 	}
 	return true
 }
@@ -213,7 +228,7 @@ func (a *Adaptive) candidates(target string, proxies []C.Proxy) []C.Proxy {
 	}
 	failedHosts := map[string]map[string]bool{}
 	for _, r := range a.records {
-		if !r.Until.After(now) {
+		if !r.Until.After(now) || r.unusableAt(now) {
 			continue
 		}
 		host, _, err := net.SplitHostPort(r.Target)
@@ -282,17 +297,23 @@ func (a *Adaptive) DialContext(ctx context.Context, m *C.Metadata) (C.Conn, erro
 	}
 	candidates := a.candidates(target, proxies)
 	var last error = errors.New("all candidates cooling down")
-	for i, p := range candidates {
-		if i >= a.opt.MaxAttempts || ctx.Err() != nil {
+	attempts := 0
+	for _, p := range candidates {
+		if attempts >= a.opt.MaxAttempts || ctx.Err() != nil {
 			break
 		}
-		attempt, stop := context.WithTimeout(ctx, time.Duration(a.opt.AttemptTimeout)*time.Millisecond)
 		a.mu.Lock()
 		r := a.record(target, p.Name())
+		if r.unusableAt(a.now()) {
+			a.mu.Unlock()
+			continue
+		}
 		r.Dials++
 		a.sequence++
 		epoch := a.sequence
 		a.mu.Unlock()
+		attempts++
+		attempt, stop := context.WithTimeout(ctx, time.Duration(a.opt.AttemptTimeout)*time.Millisecond)
 		conn, err := p.DialContext(attempt, m)
 		phase := "dial-error"
 		// With a dial error the adapter owns cleanup and the returned connection
@@ -390,14 +411,19 @@ func primeAdaptiveHandshake(ctx context.Context, conn C.Conn) (err error) {
 	return conn.SetDeadline(time.Time{})
 }
 
+type AdaptiveFeedback struct {
+	Node          string    `json:"node"`
+	CooldownUntil time.Time `json:"cooldownUntil"`
+}
+
 // Feedback is scoped to the latest submitted successful route for this target.
 // A later successful close cannot erase newer user feedback.
-func (a *Adaptive) Feedback(target, reason string) error {
+func (a *Adaptive) Feedback(target, reason string) (AdaptiveFeedback, error) {
 	proxies := a.GetProxies(false)
 	switch reason {
 	case "unknown", "timeout", "disconnect", "unusable":
 	default:
-		return errors.New("unsupported feedback reason")
+		return AdaptiveFeedback{}, errors.New("unsupported feedback reason")
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -410,14 +436,14 @@ func (a *Adaptive) Feedback(target, reason string) error {
 		}
 	}
 	if node == "" {
-		return errors.New("target has no recent established route")
+		return AdaptiveFeedback{}, errors.New("target has no recent established route")
 	}
 	r := a.record(target, node)
 	r.Failures++
 	a.sequence++
 	a.applyEvidence(r, a.sequence, "feedback:"+reason)
 	a.event(adaptiveEvent{Target: target, Node: node, Kind: "feedback", Reason: reason})
-	return nil
+	return AdaptiveFeedback{Node: node, CooldownUntil: r.Until}, nil
 }
 
 func (a *Adaptive) Snapshot() any {

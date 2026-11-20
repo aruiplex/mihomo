@@ -122,7 +122,7 @@ func TestAdaptiveTargetRecoveryRegionAndCooldown(t *testing.T) {
 		t.Fatalf("single target contaminated other target: %v", attempts)
 	}
 	// Feedback temporarily excludes C; an expired failure must become eligible.
-	if err := group.Feedback("chat.test:443", "unknown"); err != nil {
+	if _, err := group.Feedback("chat.test:443", "unknown"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := group.DialContext(context.Background(), adaptiveTestMetadata("chat.test")); err == nil {
@@ -168,7 +168,7 @@ func TestAdaptiveFeedbackPreservesConnectionsAndRecordsLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Feedback("feedback.test:443", "timeout"); err != nil {
+	if _, err := g.Feedback("feedback.test:443", "timeout"); err != nil {
 		t.Fatal(err)
 	}
 	next, err := g.DialContext(context.Background(), adaptiveTestMetadata("feedback.test"))
@@ -196,9 +196,46 @@ func TestAdaptiveFeedbackPreservesConnectionsAndRecordsLifecycle(t *testing.T) {
 			t.Fatalf("bad lifecycle observation %+v", e)
 		}
 	}
-	if err := g.Feedback("unseen.test:443", "unknown"); err == nil {
+	if _, err := g.Feedback("unseen.test:443", "unknown"); err == nil {
 		t.Fatal("unobserved feedback accepted")
 	}
+}
+
+func TestAdaptiveUnusableFeedbackHasLongTargetOnlyCooldown(t *testing.T) {
+	g := adaptiveTestGroup(t, AdaptiveOption{QualityTTL: 60}, adaptiveTestNode("A", adaptiveTestOK), adaptiveTestNode("B", adaptiveTestOK))
+	now := time.Now()
+	g.now = func() time.Time { return now }
+	dial := func(host, want string) {
+		t.Helper()
+		conn, err := g.DialContext(context.Background(), adaptiveTestMetadata(host))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if got := conn.(*adaptiveConn).node; got != want {
+			t.Fatalf("%s: selected %s, want %s", host, got, want)
+		}
+	}
+
+	for _, host := range []string{"one.test", "two.test", "three.test"} {
+		dial(host, "A")
+		result, err := g.Feedback(host+":443", "unusable")
+		if err != nil || result.Node != "A" || !result.CooldownUntil.Equal(now.Add(30*time.Minute)) {
+			t.Fatalf("%s: feedback result %+v, error %v", host, result, err)
+		}
+	}
+
+	dial("other.test", "A")
+	result, err := g.Feedback("other.test:443", "timeout")
+	if err != nil || result.Node != "A" || !result.CooldownUntil.Equal(now.Add(30*time.Second)) {
+		t.Fatalf("timeout feedback result %+v, error %v", result, err)
+	}
+	dial("other.test", "B")
+	now = now.Add(2 * time.Minute)
+	dial("other.test", "A")
+	dial("one.test", "B")
+	now = now.Add(28 * time.Minute)
+	dial("one.test", "A")
 }
 
 func TestAdaptiveDoesNotWriteLazyHandshakePayload(t *testing.T) {
@@ -310,7 +347,7 @@ func TestAdaptiveDirectConstraintsAndOriginalTarget(t *testing.T) {
 	if !reflect.DeepEqual(calls, []string{"DIRECT", "proxy"}) {
 		t.Fatalf("public direct failure did not use proxy: %v", calls)
 	}
-	if err := g.Feedback("original.test:443", "unknown"); err != nil {
+	if _, err := g.Feedback("original.test:443", "unknown"); err != nil {
 		t.Fatalf("original domain lost: %v", err)
 	}
 }
@@ -403,7 +440,7 @@ func TestAdaptiveFeedbackSurvivesEventRotation(t *testing.T) {
 		}
 		c.Close()
 	}
-	if err := g.Feedback("older.test:443", "unknown"); err != nil {
+	if _, err := g.Feedback("older.test:443", "unknown"); err != nil {
 		t.Fatalf("feedback incorrectly depended on finite event log: %v", err)
 	}
 }

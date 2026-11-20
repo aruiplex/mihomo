@@ -190,9 +190,14 @@ func postAdaptiveFeedback(w http.ResponseWriter, r *http.Request) {
 		render.JSON(w, r, ErrBadRequest)
 		return
 	}
-	if err := group.Feedback(req.Target, req.Reason); err != nil {
+	result, err := group.Feedback(req.Target, req.Reason)
+	if err != nil {
 		render.Status(r, http.StatusBadRequest)
 		render.JSON(w, r, newError(err.Error()))
+		return
+	}
+	if r.URL.Query().Get("receipt") == "1" {
+		render.JSON(w, r, result)
 		return
 	}
 	render.NoContent(w, r)

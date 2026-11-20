@@ -61,7 +61,7 @@ func TestAdaptiveEarlierConnectionCannotReplaceFeedback(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	if err := g.Feedback("feedback.test:443", "unusable"); err != nil {
+	if _, err := g.Feedback("feedback.test:443", "unusable"); err != nil {
 		t.Fatal(err)
 	}
 	before := *g.records["feedback.test:443\x00only"]
@@ -132,7 +132,7 @@ func TestAdaptiveEarlierDialSuccessCannotEraseFeedback(t *testing.T) {
 		done <- c
 	}()
 	<-started
-	if err := g.Feedback("feedback.test:443", "unusable"); err != nil {
+	if _, err := g.Feedback("feedback.test:443", "unusable"); err != nil {
 		t.Fatal(err)
 	}
 	before := *g.records["feedback.test:443\x00only"]
@@ -332,7 +332,8 @@ func TestAdaptiveEarlierSuccessCannotRetargetFeedback(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer current.Close()
-	if err := g.Feedback("two.test:443", "unusable"); err != nil {
+	exclusion, err := g.Feedback("two.test:443", "unusable")
+	if err != nil {
 		t.Fatal(err)
 	}
 	close(finish)
@@ -341,10 +342,11 @@ func TestAdaptiveEarlierSuccessCannotRetargetFeedback(t *testing.T) {
 		t.Fatal("earlier caller lost connection")
 	}
 	defer earlier.Close()
-	if err := g.Feedback("two.test:443", "disconnect"); err != nil {
+	subsequent, err := g.Feedback("two.test:443", "disconnect")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if g.records["two.test:443\x00B"].Reason != "feedback:disconnect" {
-		t.Fatal("earlier dial success retargeted feedback away from newer request's B route")
+	if subsequent.Node != "B" || !subsequent.CooldownUntil.Equal(exclusion.CooldownUntil) {
+		t.Fatalf("later feedback changed the selected node or shortened the exclusion: %+v", subsequent)
 	}
 }

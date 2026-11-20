@@ -22,7 +22,7 @@ func TestAdaptiveQualitySurvivesReloadWithoutClosingHealthyConnection(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = first.Feedback("chat.test:443", "timeout"); err != nil {
+	if _, err = first.Feedback("chat.test:443", "timeout"); err != nil {
 		t.Fatal(err)
 	}
 	first.Snapshot() // Public observation flushes a checkpoint; background debounce is also bounded.
